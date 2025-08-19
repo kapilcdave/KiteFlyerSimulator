@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>3D Kite Flyer Simulator</title>
+  <style>
+    html,body{height:100%;margin:0;overflow:hidden;font-family:system-ui,Segoe UI,Roboto}
+    #ui{position:absolute;right:12px;top:12px;background:rgba(255,255,255,0.9);padding:10px;border-radius:8px;backdrop-filter:blur(4px);max-width:260px}
+    label{display:block;font-size:12px;margin-top:8px}
+    input[type=range]{width:100%}
+    button{margin-top:8px}
+    #credits{position:absolute;left:12px;bottom:12px;color:#333;background:rgba(255,255,255,0.8);padding:6px;border-radius:6px;font-size:12px}
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <strong>3D Kite Flyer — Controls</strong>
+    <label>Wind speed: <span id="windVal">6</span> m/s</label>
+    <input id="wind" type="range" min="0" max="20" value="6" step="0.1">
+    <label>Wind dir (deg): <span id="windDirVal">30</span>°</label>
+    <input id="windDir" type="range" min="-180" max="180" value="30" step="1">
+    <label>Tether length: <span id="lenVal">20</span> m</label>
+    <input id="tetherLen" type="range" min="5" max="60" value="20" step="0.5">
+    <label>Kite angle of attack: <span id="aoaVal">8</span>°</label>
+    <input id="aoa" type="range" min="-10" max="20" value="8" step="0.5">
+    <label>Enable turbulence:</label>
+    <input id="turb" type="checkbox" checked>
+    <button id="reset">Reset kite</button>
+    <hr>
+    <div style="font-size:12px">Mouse: orbit / scroll zoom. Drag kite: hold <em>Shift</em> + drag. Spacebar to toggle pause.</div>
+  </div>
+  <div id="credits">Built with Three.js — simple physics (spring tether + aerodynamic lift)</div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.154.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.154.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <script type="module">
+
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+  // ----- Scene setup -----
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xcfeef9);
+  const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 1000);
+  camera.position.set(30, 15, 30);
+  const renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+
+  // ground
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(500,500), new THREE.MeshLambertMaterial({color:0x85c27a}));
+  ground.rotation.x = -Math.PI/2; ground.position.y = -0.1;
+  scene.add(ground);
+
+  // light
+  const hemi = new THREE.HemisphereLight(0xffffbb, 0x444455, 1.0);
+  hemi.position.set(0, 50, 0); scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.8); dir.position.set(30,50,10); scene.add(dir);
+
+  // clouds
+  function createClouds(){
+    const cloudGeo = new THREE.SphereGeometry(5, 8, 8);
+    const cloudMat = new THREE.MeshBasicMaterial({color: 0xffffff});
+    for(let i=0; i<10; i++){
+      const cloud = new THREE.Mesh(cloudGeo, cloudMat);
+      cloud.position.set(
+        (Math.random() - 0.5) * 400,
+        Math.random() * 50 + 50,
+        (Math.random() - 0.5) * 400
+      );
+      cloud.scale.set(Math.random()*2+1, Math.random()*2+1, Math.random()*2+1);
+      scene.add(cloud);
+    }
+  }
+  createClouds();
+
+  // anchor point (user/ground where tether attaches)
+  const anchor = new THREE.Object3D(); anchor.position.set(0, 2, 0);
+  scene.add(anchor);
+  const anchorViz = new THREE.Mesh(new THREE.SphereGeometry(0.3,12,12), new THREE.MeshBasicMaterial({color:0x222222}));
+  anchorViz.position.copy(anchor.position); scene.add(anchorViz);
+
+  // kite (triangle) mesh
+  function makeKiteMesh(){
+    const g = new THREE.BufferGeometry();
+    const verts = new Float32Array([
+      0, 0.0, 0,   // nose
+      -3.6, -0.04, 2.4, // left
+      3.6, -0.04, 2.4   // right
+    ]);
+    g.setAttribute('position', new THREE.BufferAttribute(verts,3));
+    g.computeVertexNormals();
+    const mat = new THREE.MeshBasicMaterial({color:0xffff00, side: THREE.DoubleSide});
+    const m = new THREE.Mesh(g, mat);
+    // small tail
+    const tailGeo = new THREE.CylinderGeometry(0.02,0.02,5,6);
+    const tail = new THREE.Mesh(tailGeo, new THREE.MeshBasicMaterial({color:0x333333}));
+    tail.geometry.translate(0,-2.5,0);
+    tail.rotation.x = Math.PI/2; tail.position.set(0,-0.1,-0.9);
+    m.add(tail);
+    return m;
+  }
+
+  const kite = makeKiteMesh(); scene.add(kite);
+
+  // tether line
+  const tetherGeo = new THREE.BufferGeometry();
+  tetherGeo.setFromPoints([anchor.position, kite.position]);
+  const tetherMat = new THREE.LineBasicMaterial({color:0x000000});
+  const tetherLine = new THREE.Line(tetherGeo, tetherMat);
+  scene.add(tetherLine);
+
+  // --- Physics state ---
+  const state = {
+    pos: new THREE.Vector3(10,10,6),
+    vel: new THREE.Vector3(0,0,0),
+    mass: 0.8, // kg
+    area: 0.6, // m^2 (kite area)
+    aoa: THREE.MathUtils.degToRad(8),
+    tetherLen: 20,
+    springK: 8.0,
+    springDamping: 5.2,
+    gravity: new THREE.Vector3(0,-9.81,0),
+    paused: false
+  };
+
+  // initialize
+  kite.position.copy(state.pos);
+
+  // UI bindings
+  const windSlider = document.getElementById('wind');
+  const windVal = document.getElementById('windVal');
+  const windDirSlider = document.getElementById('windDir');
+  const windDirVal = document.getElementById('windDirVal');
+  const tetherLen = document.getElementById('tetherLen');
+  const lenVal = document.getElementById('lenVal');
+  const aoaSlider = document.getElementById('aoa');
+  const aoaVal = document.getElementById('aoaVal');
+  const turbCheckbox = document.getElementById('turb');
+  document.getElementById('reset').onclick = ()=>{
+    state.pos.set(10,10,6);
+    state.vel.set(0,0,0);
+    state.tetherLen = 20;
+    state.aoa = THREE.MathUtils.degToRad(8);
+    windSlider.value = 6;
+    windDirSlider.value = 30;
+    tetherLen.value = 20;
+    aoaSlider.value = 8;
+    windVal.innerText = windSlider.value;
+    windDirVal.innerText = windDirSlider.value;
+    lenVal.innerText = tetherLen.value;
+    aoaVal.innerText = aoaSlider.value;
+    kite.position.copy(state.pos);
+    kite.lookAt(new THREE.Vector3().addVectors(state.pos, getWindVector()).add(anchor.position).multiplyScalar(0.5));
+    tetherLine.geometry.setFromPoints([anchor.position, kite.position]);
+    tetherLine.geometry.attributes.position.needsUpdate = true;
+  }
+
+  function getWindVector(){
+    const speed = parseFloat(windSlider.value);
+    const dirDeg = parseFloat(windDirSlider.value);
+    const rad = THREE.MathUtils.degToRad(dirDeg);
+    // XZ plane wind
+    const w = new THREE.Vector3(Math.cos(rad)*speed, 0, Math.sin(rad)*speed);
+    return w;
+  }
+
+  windSlider.oninput = ()=> windVal.innerText = windSlider.value;
+  windDirSlider.oninput = ()=> windDirVal.innerText = windDirSlider.value;
+  tetherLen.oninput = ()=> { lenVal.innerText = tetherLen.value; state.tetherLen = parseFloat(tetherLen.value); }
+  aoaSlider.oninput = ()=> { aoaVal.innerText = aoaSlider.value; state.aoa = THREE.MathUtils.degToRad(parseFloat(aoaSlider.value)); }
+
+  // drag kite with Shift + drag
+  let isDragging = false; let dragStart = new THREE.Vector2();
+  renderer.domElement.addEventListener('pointerdown', (e)=>{
+    if (!e.shiftKey) return;
+    isDragging = true; dragStart.set(e.clientX, e.clientY);
+    controls.enabled = false;
+  });
+  window.addEventListener('pointerup', ()=>{ isDragging=false; controls.enabled=true; });
+  renderer.domElement.addEventListener('pointermove', (e)=>{
+    if(!isDragging) return;
+    const dx = (e.clientX - dragStart.x)/200; const dy = (e.clientY - dragStart.y)/200;
+    // nudge kite
+    state.pos.x += dx*2; state.pos.y -= dy*2;
+    dragStart.set(e.clientX, e.clientY);
+    state.vel.set(0,0,0);
+  });
+
+  window.addEventListener('keydown',(e)=>{ if(e.code==='Space'){ state.paused=!state.paused; } });
+
+  // aerodynamic coefficients (very simplified)
+  function computeAerodynamicForces(pos, vel, wind, normal){
+    // relative wind
+    const rel = new THREE.Vector3().subVectors(wind, vel);
+    const relSpeed = rel.length();
+    if(relSpeed < 1e-4) return new THREE.Vector3();
+
+    // assume kite normal points roughly along -Z of kite local (we'll compute from geometry orientation)
+    // lift magnitude ~ 0.5 * rho * V^2 * area * Cl
+    const rho = 1.225;
+    // simple lift coefficient as function of angle-of-attack
+    const aoa = state.aoa; // radians
+    const Cl = 0.8 * Math.sin(2*aoa) + 0.2; // simple curve
+    const liftMag = 0.5 * rho * relSpeed*relSpeed * state.area * Cl;
+
+    // direction: perpendicular to rel and kite span -> approximate using cross product with normal
+    let lift = new THREE.Vector3(0, 0, 0);
+    const liftDirVec = new THREE.Vector3().crossVectors(rel, normal).cross(rel);
+    if (liftDirVec.lengthSq() > 1e-8) { // check for non-zero vector before normalizing
+      const liftDir = liftDirVec.normalize();
+      lift = liftDir.multiplyScalar(liftMag);
+    }
+
+    // drag: ~0.5 * rho * V^2 * area * Cd
+    const Cd = 0.6 + 0.4*Math.abs(Math.sin(aoa));
+    const dragMag = 0.5 * rho * relSpeed*relSpeed * state.area * Cd;
+    const drag = rel.clone().normalize().multiplyScalar(-dragMag);
+
+    return new THREE.Vector3().add(lift).add(drag);
+  }
+
+  // approximate kite normal from current orientation (we'll set it to face into the relative wind by rotating a bit)
+  function estimateKiteNormal(){
+    // default kite plane normal points up (0,1,0) or forward? We'll use a forward-facing normal in world coords
+    // For a simple aesthetic: normal = (anchor - kite) cross up
+    const toAnchor = new THREE.Vector3().subVectors(anchor.position, state.pos).normalize();
+    const up = new THREE.Vector3(0,1,0);
+    const normal = new THREE.Vector3().crossVectors(toAnchor, up).cross(toAnchor).normalize();
+    if(normal.lengthSq() < 1e-6) return new THREE.Vector3(0,1,0);
+    return normal;
+  }
+
+  // integration timestep
+  let last = performance.now();
+  let fps = 0;
+  function animate(t){
+    requestAnimationFrame(animate);
+    const now = t; let dt = (now - last)/1000; last = now; if(dt>0.05) dt=0.05;
+    if (dt > 0) fps = 1/dt;
+    if(!state.paused){ stepPhysics(dt); }
+    // update visuals
+    kite.position.copy(state.pos);
+    // orient kite to face wind+anchor
+    const windVec = getWindVector();
+    kite.lookAt(anchor.position);
+
+    // tether update
+    tetherLine.geometry.setFromPoints([anchor.position, kite.position]);
+    tetherLine.geometry.attributes.position.needsUpdate = true;
+
+    controls.update(); renderer.render(scene, camera);
+  }
+
+  function stepPhysics(dt){
+    // forces
+    const wind = getWindVector();
+    // add turbulent gusts if enabled
+    if(turbCheckbox.checked){
+      const gust = (Math.sin(performance.now()/600) + Math.sin(performance.now()/300.3))*0.5;
+      wind.x += (Math.random()*2-1)*0.5 + gust*0.8;
+      wind.z += (Math.random()*2-1)*0.5 + Math.cos(performance.now()/500)*0.6;
+    }
+
+    const normal = estimateKiteNormal();
+    const aero = computeAerodynamicForces(state.pos, state.vel, wind, normal);
+
+    // spring tether: apply towards anchor with maximum length constraint
+    const toAnchor = new THREE.Vector3().subVectors(anchor.position, state.pos);
+    const dist = toAnchor.length();
+    const dir = toAnchor.clone().normalize();
+    let springForce = new THREE.Vector3();
+    if(dist > state.tetherLen){
+      // stiff spring when beyond tether length
+      const stretch = dist - state.tetherLen;
+      springForce = dir.multiplyScalar(state.springK * stretch);
+      // damping along tether
+      const relVelAlong = dir.dot(state.vel);
+      springForce.add(dir.multiplyScalar(-state.springDamping * relVelAlong));
+    } else {
+      // slight tension even inside length to keep kite from drifting
+      springForce = dir.multiplyScalar(state.springK * (dist - state.tetherLen*0.1) * 0.05);
+    }
+
+    // gravity
+    const gravity = state.gravity.clone().multiplyScalar(state.mass);
+
+    // total
+    const totalF = new THREE.Vector3().add(aero).add(springForce).sub(gravity);
+
+    // acceleration
+    const acc = totalF.clone().divideScalar(state.mass);
+
+    // semi-implicit euler
+    state.vel.add(acc.multiplyScalar(dt));
+    // simple air damping
+    state.vel.multiplyScalar(1 - 0.5*dt);
+    state.pos.add(state.vel.clone().multiplyScalar(dt));
+
+    // clamp velocity to a max value
+    const maxVel = 50;
+    if(state.vel.lengthSq() > maxVel*maxVel){
+      state.vel.normalize().multiplyScalar(maxVel);
+    }
+
+    // keep above ground
+    if(state.pos.y < 0.5){ state.pos.y = 0.5; state.vel.y = Math.max(0, state.vel.y); }
+  }
+
+  // resize
+  window.addEventListener('resize', ()=>{ camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+  // animation loop
+  last = performance.now(); animate(last);
+
+  // simple UI: show slider values initial
+  windVal.innerText = windSlider.value; windDirVal.innerText = windDirSlider.value; lenVal.innerText = tetherLen.value; aoaVal.innerText = aoaSlider.value;
+
+  // simple telemetry overlay
+  const telemetry = document.createElement('div'); telemetry.style.position='absolute'; telemetry.style.left='12px'; telemetry.style.top='12px'; telemetry.style.background='rgba(255,255,255,0.9)'; telemetry.style.padding='6px'; telemetry.style.borderRadius='6px'; telemetry.style.fontSize='12px';
+  telemetry.innerHTML = 'Kite pos: --'; document.body.appendChild(telemetry);
+  setInterval(()=>{ telemetry.innerHTML = `Kite pos: ${state.pos.x.toFixed(1)}, ${state.pos.y.toFixed(1)}, ${state.pos.z.toFixed(1)}<br>Vel: ${state.vel.length().toFixed(2)} m/s<br>TetherLen: ${state.tetherLen} m<br>FPS: ${fps.toFixed(1)}`; }, 250);
+
+  </script>
